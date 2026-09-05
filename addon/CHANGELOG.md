@@ -1,3 +1,11 @@
+## 0.1.13
+
+### Bug fixes
+
+- Persist Claude Code state (login credentials, session history, memory) across
+  add-on restarts and host reboots: the installer pre-creates `/root/.claude`, so the
+  `ln -sf` symlink into `/data` was landing inside it instead of replacing it
+
 ## 0.1.12
 
 ### Bug fixes

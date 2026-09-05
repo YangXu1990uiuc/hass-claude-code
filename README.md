@@ -15,13 +15,13 @@ A Home Assistant add-on that runs [Claude Code](https://docs.anthropic.com/en/do
 
 ### 1. Add the repository
 
-[![Open your Home Assistant instance and show the add add-on repository dialog.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fdkmaker%2Fhass-claude-code)
+[![Open your Home Assistant instance and show the add add-on repository dialog.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2FYangXu1990uiuc%2Fhass-claude-code)
 
 Or manually:
 
 1. Go to **Settings** > **Add-ons** > **Add-on Store**
 2. Click the **three-dot menu** (top right) > **Repositories**
-3. Add: `https://github.com/dkmaker/hass-claude-code`
+3. Add: `https://github.com/YangXu1990uiuc/hass-claude-code`
 4. Click **Save**, then refresh
 
 ### 2. Install the add-on
