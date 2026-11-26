@@ -1,0 +1,94 @@
+name: Add-on image
+
+# Builds the add-on image for each architecture and pushes it to GHCR under the
+# name in addon/config.yaml ("image", with {arch} filled in), tagged with the
+# add-on version. The Supervisor pulls that tag when you install or update.
+# Bump "version" in addon/config.yaml to ship a change to Home Assistant.
+#
+# The image does not contain Claude Code: the add-on installs it on first start.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "addon/**"
+      - "docs/**"
+      - ".github/workflows/addon-image.yml"
+  pull_request:
+    paths:
+      - "addon/**"
+      - "docs/**"
+      - ".github/workflows/addon-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read add-on metadata
+        id: meta
+        run: |
+          version=$(sed -n 's/^version: *//p' addon/config.yaml | tr -d '"')
+          image=$(sed -n 's/^image: *//p' addon/config.yaml | tr -d '"' | sed 's/{arch}/${{ matrix.arch }}/')
+          name=$(sed -n 's/^name: *//p' addon/config.yaml | tr -d '"')
+          description=$(sed -n 's/^description: *//p' addon/config.yaml | tr -d '"')
+          if [ -z "$version" ] || [ -z "$image" ]; then
+            echo "::error::Could not read version/image from addon/config.yaml"
+            exit 1
+          fi
+          {
+            echo "version=$version"
+            echo "image=$image"
+            echo "name=$name"
+            echo "description=$description"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Copy docs into the build context
+        run: cp -r docs addon/docs
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: addon
+          platforms: ${{ matrix.platform }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+            ${{ steps.meta.outputs.image }}:latest
+          build-args: |
+            BUILD_ARCH=${{ matrix.arch }}
+            BUILD_VERSION=${{ steps.meta.outputs.version }}
+            BUILD_NAME=${{ steps.meta.outputs.name }}
+            BUILD_DESCRIPTION=${{ steps.meta.outputs.description }}
+            BUILD_REF=${{ github.sha }}
+            BUILD_REPOSITORY=${{ github.repository }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.arch }}

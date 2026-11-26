@@ -27,22 +27,38 @@ Or manually:
 ### 2. Install the add-on
 
 1. Find **Claude Code** in the add-on store
-2. Click **Install** (the Docker image builds locally on your device — this takes a few minutes on first install)
-3. Go to the **Configuration** tab and set your **Anthropic API key**
-4. Click **Start**
+2. Click **Install**. This downloads a prebuilt image for your architecture.
+3. Optional: on the **Configuration** tab, set an **Anthropic API key**. Leave it empty to sign in with your Claude subscription (`/login` in the terminal) instead.
+4. Click **Start**. On first start, the add-on downloads Claude Code from Anthropic, which takes a minute.
 5. Open the **Claude Code** panel in the sidebar
 
-### How the build works
+### How it works
 
-Home Assistant builds the Docker image **locally on your device** when you install the add-on. There are no pre-built images to pull. The build process:
+- **The image** is built by GitHub Actions (`.github/workflows/addon-image.yml`) for amd64 and aarch64 and published to GHCR. It contains the MCP server, the pre-indexed documentation, ttyd, tmux and the startup scripts. It does **not** contain Claude Code.
+- **Claude Code** is installed on first start by the official installer into the add-on's persistent storage, and then updates itself in the background. The `claude_version` option selects the release channel or pins a version.
+- **Your data** lives in `/data/home`, which is the home directory (`/root` points to it). Claude Code sessions, memory, login, MCP servers you add, git/gh/ssh config and shell history all survive restarts and add-on updates.
 
-1. Installs Node.js dependencies for the MCP server
-2. Clones the HA documentation from this repository
-3. Builds a keyword search index from the docs
-4. Installs Claude Code CLI, ttyd, tmux, and other tools
-5. Sets up s6-overlay services for process management
+## Configuration
 
-First install takes several minutes depending on your hardware. Subsequent updates are faster due to Docker layer caching.
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `api_key` | password | *(empty)* | Anthropic API key. Leave empty to use `/login` with a Claude subscription. |
+| `model` | list | `default` | `default`, `sonnet`, `opus` or `haiku` |
+| `claude_version` | string | `stable` | `stable`, `latest`, or an exact version such as `2.1.326` to pin it |
+| `yolo_mode` | bool | `false` | Skip permission prompts (use with caution) |
+| `enable_embeddings` | bool | `false` | Download AI model for semantic doc search (~87MB) |
+| `additional_packages` | list | `[]` | Extra Alpine packages to install (e.g. `python3`, `vim`) |
+
+### Claude Code updates
+
+- `stable` is typically about a week behind `latest` and skips releases with major regressions.
+- On `stable` or `latest`, Claude Code updates itself in the background. An update takes effect the next time Claude Code starts.
+- To roll back, set `claude_version` to an earlier version number and restart the add-on. A pinned version never updates itself.
+- The downloaded binaries are excluded from add-on backups. After a restore, the add-on downloads Claude Code again on start.
+
+### Upgrading from 0.1.x
+
+On first start, 0.2.0 moves `/data/.claude`, `/data/.claude.json` and `/data/.bash_history` into `/data/home`. Sessions, memory and your login are kept. Home Assistant offers to back up the add-on before updating; keep that checked so you can roll back.
 
 ## Configuration
 
@@ -103,22 +119,33 @@ addon/
       db.ts, search.ts, embeddings.ts, indexer.ts  # Search engine
 ```
 
-The MCP server runs as a stdio child process of Claude Code (configured via `.mcp.json`). No separate network port needed.
+The MCP server runs as a stdio child process of Claude Code. It is registered as a user-scope server in `~/.claude.json`, so `claude mcp add` still works for your own servers. It reaches Home Assistant through the Supervisor proxy: REST at `http://supervisor/core/api` and WebSocket at `ws://supervisor/core/websocket`. No separate network port is needed.
 
 ## Development
 
-To test locally without HA:
+Build the image locally. The docs are copied into the build context, as CI does:
 
 ```bash
-# Build the Docker image
+rm -rf addon/docs && cp -r docs addon/docs
 docker build -t claude-code-addon addon/
-
-# Run with your API key
-docker run -it \
-  -e SUPERVISOR_TOKEN=fake \
-  -e ANTHROPIC_API_KEY=your-key \
-  claude-code-addon
 ```
+
+The add-on's services need the Supervisor API, but the home setup, Claude Code install and MCP registration live in a plain bash script you can run on its own against a scratch data directory:
+
+```bash
+mkdir -p /tmp/addon-data
+docker run --rm -v /tmp/addon-data:/data --entrypoint claude-addon claude-code-addon setup stable false
+docker run --rm -it -v /tmp/addon-data:/data --entrypoint bash claude-code-addon -l   # then run: claude
+```
+
+## Publishing
+
+1. Bump `version` in `addon/config.yaml` and add a `CHANGELOG.md` entry.
+2. Push to `main`. The **Add-on image** workflow builds both architectures and pushes `ghcr.io/<owner>/{arch}-addon-claude-code:<version>`.
+3. **First release only:** GHCR creates new packages as private, and the Supervisor can't pull private images. Open each package (`amd64-addon-claude-code` and `aarch64-addon-claude-code`) under your GitHub profile's **Packages**, then **Package settings** > **Change visibility** > **Public**.
+4. In Home Assistant, **Check for updates** in the add-on store and update.
+
+Wait until the workflow has finished before you update in Home Assistant. Until then, the Supervisor can't find the image for the new version and the update fails, while the installed version keeps running.
 
 ## Supported Architectures
 

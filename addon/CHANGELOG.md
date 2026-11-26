@@ -1,3 +1,64 @@
+## 0.2.0
+
+Reworks how the add-on stores state and installs Claude Code. Existing data is
+migrated automatically on first start: `/data/.claude`, `/data/.claude.json` and
+`/data/.bash_history` move into `/data/home`. Sessions, memory and your login are
+kept. If you roll back to 0.1.x after that, the old version won't find them.
+
+### Persistence
+
+- The whole home directory is now persistent: `/root` is a symlink to `/data/home`.
+  Everything written under `~` survives restarts and updates, including Claude Code
+  state, git/gh/ssh config and shell history. This replaces the per-file symlink
+  list that lost anything not on it.
+
+### Claude Code install and updates
+
+- Claude Code is no longer built into the image. It is installed on first start
+  into `/data/home` by the official installer, and then updates itself in the
+  background.
+- New option `claude_version`: `stable` (default, about a week behind, skips
+  releases with major regressions), `latest`, or an exact version to pin or roll
+  back. A pinned version disables background updates.
+- If the Claude Code binary is missing (for example after restoring a backup), it
+  is reinstalled on start.
+- Downloaded binaries (`home/.local/share/claude/versions`) and `home/.cache` are
+  excluded from add-on backups.
+
+### Claude Code configuration
+
+- The MCP server is registered at user scope in `~/.claude.json` instead of
+  `/etc/claude-code/managed-mcp.json`. The managed file took exclusive control,
+  which blocked `claude mcp add`, plugin MCP servers and claude.ai connectors. The
+  Supervisor token is no longer written into any config file.
+- Fix yolo mode: start Claude Code with `--dangerously-skip-permissions` and
+  `IS_SANDBOX=1`. Root is otherwise refused that flag. The previous managed-settings
+  approach used an invalid `"permissions.defaultMode"` key and a hard-coded tool
+  list that went stale.
+- `claude` is on `PATH` in login shells too (new tmux windows, `bash -l`).
+- If installing Claude Code fails (for example with no network), the terminal
+  retries the install and falls back to a shell instead of exiting.
+
+### MCP server fixes
+
+- `list_areas`, `search_devices` and `get_config_entries` now work. They posted
+  WebSocket commands to the REST API, which always failed, and the error was
+  swallowed into an empty list. They now use the Home Assistant WebSocket API
+  (`ws://supervisor/core/websocket`) over a single reused connection.
+- The `search_entities` area filter and `area` field now work. Areas come from the
+  entity and device registries; entity state attributes have no area.
+- Tool errors are returned to Claude instead of being hidden as empty results.
+- The MCP server exits when Claude Code closes it.
+
+### Build and distribution
+
+- Images are built by GitHub Actions for amd64 and aarch64 and pulled from GHCR.
+  The Supervisor no longer builds them on your device. The image does not contain
+  Claude Code.
+- The pnpm lockfile is committed, and the build installs with `--frozen-lockfile`.
+- Documentation is taken from this repository instead of cloned from upstream at
+  build time.
+
 ## 0.1.13
 
 ### Bug fixes

@@ -1,0 +1,31 @@
+---
+configuration:
+  api_key:
+    name: Anthropic API key
+    description: >-
+      Optional. Leave empty and run /login in the terminal to sign in with your
+      Claude subscription instead.
+  model:
+    name: Model
+    description: >-
+      Model alias passed to Claude Code. "default" lets Claude Code choose.
+  claude_version:
+    name: Claude Code version
+    description: >-
+      "stable" (about a week behind latest, skips releases with major
+      regressions), "latest", or an exact version such as 2.1.326 to pin it.
+      On stable/latest, Claude Code updates itself in the background; a pinned
+      version never changes. Use a version number to roll back.
+  yolo_mode:
+    name: Skip permission prompts
+    description: >-
+      Start Claude Code with --dangerously-skip-permissions. Claude can then
+      run any command and edit any file without asking.
+  enable_embeddings:
+    name: Semantic documentation search
+    description: >-
+      Download an ~87 MB embedding model for semantic search of the Home
+      Assistant docs. Keyword search works without it.
+  additional_packages:
+    name: Additional Alpine packages
+    description: Extra packages to install on start (for example python3 or vim).
