@@ -1,14 +1,13 @@
 import type { HAEntityState, HAServiceCallResponse } from './types.js';
-
-const SUPERVISOR_TOKEN = process.env.SUPERVISOR_TOKEN || '';
-const HA_BASE_URL = 'http://supervisor/core/api';
+import { HA_API_URL, supervisorToken } from './supervisor.js';
+import { getEntityAreas, listAreas } from './ha-websocket.js';
 
 async function haFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const url = `${HA_BASE_URL}${path}`;
+  const url = `${HA_API_URL}${path}`;
   const res = await fetch(url, {
     ...options,
     headers: {
-      Authorization: `Bearer ${SUPERVISOR_TOKEN}`,
+      Authorization: `Bearer ${supervisorToken()}`,
       'Content-Type': 'application/json',
       ...options.headers,
     },
@@ -22,12 +21,17 @@ async function haFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export interface EntitySearchResult {
+  state: HAEntityState;
+  area_id: string | null;
+}
+
 export async function searchEntities(args: {
   query?: string;
   domain?: string;
   area?: string;
   limit?: number;
-}): Promise<HAEntityState[]> {
+}): Promise<EntitySearchResult[]> {
   const states = await haFetch<HAEntityState[]>('/states');
 
   let filtered = states;
@@ -44,16 +48,30 @@ export async function searchEntities(args: {
     );
   }
 
+  // Areas live in the registries, not in entity state attributes.
+  let entityAreas: Map<string, string>;
   if (args.area) {
+    // The caller asked to filter by area, so a registry failure is an error.
+    const [areaMap, areas] = await Promise.all([getEntityAreas(), listAreas()]);
+    entityAreas = areaMap;
+
     const a = args.area.toLowerCase();
-    filtered = filtered.filter(s => {
-      const areaId = s.attributes.area_id as string;
-      return areaId && areaId.toLowerCase().includes(a);
-    });
+    const matching = new Set(
+      areas
+        .filter(area => area.area_id.toLowerCase().includes(a) || area.name.toLowerCase().includes(a))
+        .map(area => area.area_id),
+    );
+    filtered = filtered.filter(s => matching.has(entityAreas.get(s.entity_id) ?? ''));
+  } else {
+    // Area is only informational here; don't fail the search without it.
+    entityAreas = await getEntityAreas().catch(() => new Map<string, string>());
   }
 
   const limit = args.limit || 50;
-  return filtered.slice(0, limit);
+  return filtered.slice(0, limit).map(state => ({
+    state,
+    area_id: entityAreas.get(state.entity_id) ?? null,
+  }));
 }
 
 export async function getEntityState(entityId: string): Promise<HAEntityState> {

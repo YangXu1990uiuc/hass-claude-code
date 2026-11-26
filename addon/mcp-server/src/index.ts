@@ -20,17 +20,17 @@ server.tool(
   {
     query: z.string().optional().describe('Search term to match against entity_id or friendly_name'),
     domain: z.string().optional().describe('Filter by domain (e.g. light, switch, sensor)'),
-    area: z.string().optional().describe('Filter by area name'),
+    area: z.string().optional().describe('Filter by area name or area_id (partial match)'),
     limit: z.number().optional().describe('Max results (default 50)'),
   },
   async (args) => {
     const results = await searchEntities(args);
     // Return compact summary — use get_entity_state for full attributes
-    const summary = results.map(e => ({
+    const summary = results.map(({ state: e, area_id }) => ({
       entity_id: e.entity_id,
       state: e.state,
       name: e.attributes.friendly_name || null,
-      area: e.attributes.area_id || null,
+      area: area_id,
     }));
     return {
       content: [{
@@ -263,6 +263,10 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error('MCP server connected via stdio.');
+
+  // The open Home Assistant WebSocket would otherwise keep this process alive
+  // after Claude Code goes away.
+  process.stdin.on('end', () => process.exit(0));
 }
 
 main().catch((err) => {

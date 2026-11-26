@@ -83,6 +83,15 @@ export interface HADevice {
   labels: string[];
 }
 
+export interface HAEntityRegistryEntry {
+  entity_id: string;
+  area_id: string | null;
+  device_id: string | null;
+  platform: string;
+  name: string | null;
+  disabled_by: string | null;
+}
+
 export interface HAConfigEntry {
   entry_id: string;
   domain: string;
