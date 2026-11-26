@@ -142,7 +142,7 @@ docker run --rm -it -v /tmp/addon-data:/data --entrypoint bash claude-code-addon
 
 1. Bump `version` in `addon/config.yaml` and add a `CHANGELOG.md` entry.
 2. Push to `main`. The **Add-on image** workflow builds both architectures and pushes `ghcr.io/<owner>/{arch}-addon-claude-code:<version>`.
-3. **First release only:** GHCR creates new packages as private, and the Supervisor can't pull private images. Open each package (`amd64-addon-claude-code` and `aarch64-addon-claude-code`) under your GitHub profile's **Packages**, then **Package settings** > **Change visibility** > **Public**.
+3. **First release only:** check that both packages (`amd64-addon-claude-code` and `aarch64-addon-claude-code`) are public, because the Supervisor can't pull private images. In a public repository, the packages normally inherit its visibility through the `org.opencontainers.image.source` label the workflow sets. If one shows as private under your GitHub profile's **Packages**, open **Package settings** > **Change visibility** > **Public**.
 4. In Home Assistant, **Check for updates** in the add-on store and update.
 
 Wait until the workflow has finished before you update in Home Assistant. Until then, the Supervisor can't find the image for the new version and the update fails, while the installed version keeps running.
