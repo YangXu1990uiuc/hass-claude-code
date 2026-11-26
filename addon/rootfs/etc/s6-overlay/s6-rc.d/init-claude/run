@@ -2,11 +2,12 @@
 # shellcheck shell=bash
 # ==============================================================================
 # Claude Code Add-on: Environment setup
-# Sets up API key, CLAUDE.md, .mcp.json, persistent storage
+# Persistent home, Claude Code install, MCP registration, session environment.
+# The bashio-free work lives in /usr/bin/claude-addon.
 # ==============================================================================
 declare api_key
 declare model
-declare yolo_mode
+declare claude_version
 declare enable_embeddings
 
 bashio::log.info 'Setting up Claude Code environment...'
@@ -14,8 +15,12 @@ bashio::log.info 'Setting up Claude Code environment...'
 # --- Read config ---
 api_key=$(bashio::config 'api_key')
 model=$(bashio::config 'model')
-yolo_mode=$(bashio::config 'yolo_mode')
+claude_version=$(bashio::config 'claude_version')
 enable_embeddings=$(bashio::config 'enable_embeddings')
+
+if ! bashio::var.has_value "${claude_version}" || [[ "${claude_version}" == "null" ]]; then
+    claude_version="stable"
+fi
 
 # --- Set environment variables for all services (s6 convention: one file per var) ---
 printf '%s' "${enable_embeddings}" > /var/run/s6/container_environment/ENABLE_EMBEDDINGS
@@ -23,118 +28,41 @@ printf '%s' "/opt/mcp-server/data/docs-search.db" > /var/run/s6/container_enviro
 printf '%s' "/opt/docs" > /var/run/s6/container_environment/DOCS_PATH
 printf '%s' "/data/models" > /var/run/s6/container_environment/MODELS_DIR
 
-# Write all config to /etc/profile.d/ so the entrypoint shell sees them
+# --- Persistent home (+ migration from 0.1.x), Claude Code, MCP server ---
+/usr/bin/claude-addon setup "${claude_version}" "${enable_embeddings}"
+
+# --- Environment for the terminal session (sourced by claude-entrypoint.sh) ---
 {
+    # Login shells (new tmux windows, `bash -l`) get PATH reset by /etc/profile,
+    # which drops the Dockerfile's ~/.local/bin entry where Claude Code lives.
+    # shellcheck disable=SC2016
+    echo 'case ":${PATH}:" in *":/root/.local/bin:"*) ;; *) export PATH="/root/.local/bin:${PATH}" ;; esac'
+
     if bashio::var.has_value "${api_key}"; then
         echo "export ANTHROPIC_API_KEY=\"${api_key}\""
     else
         bashio::log.info 'No API key configured — use /login in Claude Code to authenticate via subscription.'
     fi
     echo "export SUPERVISOR_TOKEN=\"${SUPERVISOR_TOKEN}\""
-    echo "export DISABLE_AUTOUPDATER=1"
     echo "export CLAUDE_MODEL=\"${model}\""
-    echo "export CLAUDE_YOLO=\"${yolo_mode}\""
-} > /etc/profile.d/claude.sh
+    echo "export CLAUDE_VERSION_SPEC=\"${claude_version}\""
 
-# --- Persistent storage ---
-mkdir -p /data/.claude /data/models
-touch /data/.bash_history
-
-# The Claude installer pre-creates /root/.claude as a real directory and writes
-# /root/.claude.json during the image build. `ln -sf` onto an existing directory
-# creates the link *inside* it (/root/.claude/.claude), so credentials, sessions
-# and memory end up on the ephemeral container layer and are lost on every
-# restart. Seed .claude.json from the installer's copy on first run, then
-# replace the installer's directory with the symlink outright.
-if [[ ! -f /data/.claude.json ]]; then
-    if [[ -f /root/.claude.json && ! -L /root/.claude.json ]]; then
-        cp /root/.claude.json /data/.claude.json
-    else
-        echo '{}' > /data/.claude.json
+    # A pinned version must not move; channels update in the background.
+    if [[ "${claude_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+        echo "export DISABLE_AUTOUPDATER=1"
     fi
-fi
-if [[ -d /root/.claude && ! -L /root/.claude ]]; then
-    rm -rf /root/.claude
-fi
 
-# Symlink persistent data into root home (-n: never descend into an existing link)
-ln -sfn /data/.claude /root/.claude
-ln -sfn /data/.claude.json /root/.claude.json
-ln -sfn /data/.bash_history /root/.bash_history
-
-# Symlink convenient paths
-ln -sfn /homeassistant /root/homeassistant
-ln -sfn /share /root/share
-
-# --- Generate managed settings (system-wide) ---
-mkdir -p /etc/claude-code
-
-# When yolo mode is enabled, use managed settings to allow all tools.
-# This works as root (unlike --dangerously-skip-permissions which blocks on root).
-if bashio::config.true 'yolo_mode'; then
-    bashio::log.info 'Yolo mode enabled — configuring auto-approve for all tools.'
-    cat > /etc/claude-code/managed-settings.json << 'SETTINGSEOF'
-{
-  "permissions": {
-    "allow": [
-      "Bash",
-      "Edit",
-      "Write",
-      "Read",
-      "Glob",
-      "Grep",
-      "WebFetch",
-      "WebSearch",
-      "NotebookEdit",
-      "TodoWrite",
-      "Task",
-      "EnterPlanMode",
-      "ExitPlanMode",
-      "SendMessage",
-      "TeamCreate",
-      "TeamDelete",
-      "AskUserQuestion",
-      "mcp__home-assistant__search_entities",
-      "mcp__home-assistant__get_entity_state",
-      "mcp__home-assistant__call_service",
-      "mcp__home-assistant__search_automations",
-      "mcp__home-assistant__get_ha_config",
-      "mcp__home-assistant__list_areas",
-      "mcp__home-assistant__search_devices",
-      "mcp__home-assistant__get_config_entries",
-      "mcp__home-assistant__search_docs",
-      "mcp__home-assistant__read_doc",
-      "mcp__home-assistant__get_doc_stats"
-    ],
-    "deny": []
-  },
-  "permissions.defaultMode": "acceptEdits"
-}
-SETTINGSEOF
-else
-    echo '{}' > /etc/claude-code/managed-settings.json
-fi
-
-# --- Generate managed MCP config (system-wide, always loaded) ---
-bashio::log.info 'Generating MCP server configuration...'
-
-cat > /etc/claude-code/managed-mcp.json << MCPEOF
-{
-  "mcpServers": {
-    "home-assistant": {
-      "command": "node",
-      "args": ["/opt/mcp-server/dist/index.js"],
-      "env": {
-        "SUPERVISOR_TOKEN": "${SUPERVISOR_TOKEN}",
-        "ENABLE_EMBEDDINGS": "${enable_embeddings}",
-        "DOCS_DB_PATH": "/opt/mcp-server/data/docs-search.db",
-        "DOCS_PATH": "/opt/docs",
-        "MODELS_DIR": "/data/models"
-      }
-    }
-  }
-}
-MCPEOF
+    # Yolo mode: --dangerously-skip-permissions is refused for root unless
+    # IS_SANDBOX=1 marks the environment as a deliberate sandbox. The add-on
+    # container is that sandbox.
+    if bashio::config.true 'yolo_mode'; then
+        bashio::log.info 'Yolo mode enabled — Claude Code will skip permission prompts.'
+        echo "export CLAUDE_YOLO=true"
+        echo "export IS_SANDBOX=1"
+    else
+        echo "export CLAUDE_YOLO=false"
+    fi
+} > /etc/profile.d/claude.sh
 
 # --- Generate default CLAUDE.md in /homeassistant/ if absent ---
 if [[ ! -f /homeassistant/CLAUDE.md ]]; then

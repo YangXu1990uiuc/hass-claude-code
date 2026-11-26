@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# Claude Code Add-on: persistent home, Claude Code install, MCP registration
+#
+# Layout (everything stateful lives under /data, which survives restarts,
+# add-on updates and is included in backups):
+#   /data/home              the root user's home; /root is a symlink to it
+#   /data/home/.claude      Claude Code settings, sessions, memory, credentials
+#   /data/home/.claude.json Claude Code global state, user-scope MCP servers
+#   /data/home/.local       Claude Code itself (native installer + auto-updater)
+#
+# Plain bash on purpose (no bashio), so it can be exercised outside Home
+# Assistant, e.g.:
+#   docker run --rm -v "$PWD/data:/data" --entrypoint claude-addon IMAGE setup stable false
+#
+# Usage:
+#   claude-addon setup [VERSION_SPEC] [ENABLE_EMBEDDINGS]
+#   claude-addon install [VERSION_SPEC]
+# VERSION_SPEC is "stable", "latest" or an exact version such as "2.1.332".
+# ==============================================================================
+# jq programs below use jq's own $variables, which must not be expanded by bash.
+# shellcheck disable=SC2016
+set -euo pipefail
+
+readonly DATA_DIR="/data"
+readonly HOME_DIR="${DATA_DIR}/home"
+readonly CLAUDE_BIN="${HOME_DIR}/.local/bin/claude"
+readonly INSTALLER_URL="https://claude.ai/install.sh"
+readonly MCP_SERVER_JS="/opt/mcp-server/dist/index.js"
+
+export HOME=/root
+
+log() { echo "[claude-addon] $*"; }
+warn() { echo "[claude-addon] WARNING: $*" >&2; }
+
+is_pinned() { [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; }
+
+# Rewrite a JSON file with a jq filter; leave it untouched if it isn't valid JSON.
+jq_in_place() {
+    local file="$1"
+    shift
+    local tmp="${file}.tmp.$$"
+    if jq "$@" "${file}" > "${tmp}"; then
+        mv "${tmp}" "${file}"
+    else
+        rm -f "${tmp}"
+        warn "${file} is not valid JSON; left unchanged"
+        return 1
+    fi
+}
+
+setup_home() {
+    mkdir -p "${HOME_DIR}"
+    chmod 700 "${HOME_DIR}"
+
+    # Add-on 0.1.x kept Claude state directly in /data and symlinked each item
+    # into /root. Move it into the new home on first start.
+    local item
+    for item in .claude .claude.json .bash_history; do
+        if [[ -e "${DATA_DIR}/${item}" && ! -L "${DATA_DIR}/${item}" ]]; then
+            if [[ -e "${HOME_DIR}/${item}" ]]; then
+                warn "${DATA_DIR}/${item} and ${HOME_DIR}/${item} both exist; using the latter and leaving the old copy in place"
+            else
+                log "Migrating ${DATA_DIR}/${item} -> ${HOME_DIR}/${item}"
+                mv "${DATA_DIR}/${item}" "${HOME_DIR}/${item}"
+            fi
+        fi
+    done
+
+    mkdir -p "${HOME_DIR}/.claude"
+    if [[ ! -s "${HOME_DIR}/.claude.json" ]]; then
+        echo '{}' > "${HOME_DIR}/.claude.json"
+    fi
+    if [[ ! -s "${HOME_DIR}/.claude/settings.json" ]]; then
+        echo '{}' > "${HOME_DIR}/.claude/settings.json"
+    fi
+
+    # Convenience links to the Home Assistant directories
+    ln -sfn /homeassistant "${HOME_DIR}/homeassistant"
+    ln -sfn /share "${HOME_DIR}/share"
+}
+
+installed_version() {
+    local out
+    out=$("${CLAUDE_BIN}" --version 2>/dev/null) || return 1
+    echo "${out%% *}"
+}
+
+install_claude() {
+    local spec="${1:-stable}" current
+    current=$(installed_version || true)
+
+    if [[ -n "${current}" ]]; then
+        if is_pinned "${spec}" && [[ "${current}" != "${spec}" ]]; then
+            log "Claude Code ${current} is installed but ${spec} is pinned; installing ${spec}"
+        else
+            log "Claude Code ${current} is installed"
+            return 0
+        fi
+    else
+        # Fresh install, or the launcher points at a version that is gone
+        # (e.g. restored from a backup that excludes the versions directory).
+        log "Installing Claude Code (${spec})..."
+    fi
+
+    local installer
+    installer=$(mktemp)
+    if curl -fsSL "${INSTALLER_URL}" -o "${installer}" && bash "${installer}" "${spec}"; then
+        rm -f "${installer}"
+        log "Claude Code $(installed_version) installed"
+    else
+        rm -f "${installer}"
+        warn "Claude Code installation failed. Check the network, then run 'claude-addon install ${spec}' in the terminal."
+        return 1
+    fi
+}
+
+configure_updates() {
+    local spec="$1"
+    local settings="${HOME_DIR}/.claude/settings.json"
+
+    # The add-on option is the source of truth for the release channel. A pinned
+    # version disables background updates through DISABLE_AUTOUPDATER instead
+    # (set in /etc/profile.d/claude.sh by init-claude).
+    if ! is_pinned "${spec}"; then
+        jq_in_place "${settings}" --arg channel "${spec}" '.autoUpdatesChannel = $channel' || true
+    fi
+}
+
+register_mcp() {
+    local enable_embeddings="${1:-false}"
+
+    # User scope (top-level "mcpServers" in ~/.claude.json), not
+    # /etc/claude-code/managed-mcp.json: a managed file takes exclusive control
+    # and blocks every server the user adds themselves, plus claude.ai
+    # connectors. The Supervisor token is deliberately not written here; the
+    # server reads it from the environment.
+    jq_in_place "${HOME_DIR}/.claude.json" \
+        --arg js "${MCP_SERVER_JS}" \
+        --arg embeddings "${enable_embeddings}" \
+        '.mcpServers["home-assistant"] = {
+            type: "stdio",
+            command: "node",
+            args: [$js],
+            env: {ENABLE_EMBEDDINGS: $embeddings}
+        }' || true
+}
+
+main() {
+    local command="${1:-}"
+    case "${command}" in
+        setup)
+            local spec="${2:-stable}" embeddings="${3:-false}"
+            setup_home
+            # A failed install must not stop the add-on: the terminal still
+            # starts and offers to retry.
+            install_claude "${spec}" || true
+            configure_updates "${spec}"
+            register_mcp "${embeddings}"
+            ;;
+        install)
+            install_claude "${2:-stable}"
+            ;;
+        *)
+            echo "Usage: claude-addon setup [stable|latest|VERSION] [true|false]" >&2
+            echo "       claude-addon install [stable|latest|VERSION]" >&2
+            exit 2
+            ;;
+    esac
+}
+
+main "$@"

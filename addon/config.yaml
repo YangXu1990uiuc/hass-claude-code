@@ -1,6 +1,6 @@
 ---
 name: Claude Code
-version: 0.1.13
+version: 0.2.0
 slug: claude_code
 description: AI coding assistant with full Home Assistant access
 startup: services
@@ -10,6 +10,7 @@ ingress_stream: true
 init: false
 panel_icon: mdi:robot
 panel_title: Claude Code
+image: "ghcr.io/yangxu1990uiuc/{arch}-addon-claude-code"
 arch:
   - aarch64
   - amd64
@@ -22,15 +23,21 @@ map:
   - share:rw
   - ssl:ro
   - media:ro
+backup_exclude:
+  # Claude Code binaries (~400 MB each) are re-downloaded on start when missing
+  - "home/.local/share/claude/versions"
+  - "home/.cache"
 options:
   api_key: ""
   model: "default"
+  claude_version: "stable"
   yolo_mode: false
   enable_embeddings: false
   additional_packages: []
 schema:
   api_key: "password?"
   model: "list(default|sonnet|opus|haiku)"
+  claude_version: 'match(^(stable|latest|[0-9]+\.[0-9]+\.[0-9]+)$)'
   yolo_mode: bool
   enable_embeddings: bool
   additional_packages:

@@ -1,5 +1,8 @@
 # Build context: addon/ directory
-# HA Supervisor uses the config.yaml directory as build context.
+# Images are built in CI (.github/workflows/addon-image.yml) and pulled by the
+# Supervisor. CI copies the repository's docs/ into addon/docs/ first; for a
+# local build do the same:
+#   rm -rf addon/docs && cp -r docs addon/docs && docker build addon/
 
 # Global ARG — must be before any FROM to be visible across stages
 ARG BUILD_FROM=ghcr.io/hassio-addons/base:20.0.1
@@ -12,28 +15,22 @@ FROM alpine:3.23 AS mcp-builder
 # Pin the pnpm major version — pnpm 11 removed support for the "pnpm" field in
 # package.json and renamed the build-script allowlist to allowBuilds in
 # pnpm-workspace.yaml. An unpinned install broke this build once already (#4).
-RUN apk add --no-cache nodejs npm git build-base python3 && \
+RUN apk add --no-cache nodejs npm build-base python3 && \
     npm install -g pnpm@11
 
 WORKDIR /build
 
-# Clone docs from the repository (same repo, just need the docs/ directory)
-ARG DOCS_REPO=https://github.com/dkmaker/hass-claude-code.git
-ARG DOCS_REF=main
-RUN git clone --depth 1 --branch "${DOCS_REF}" "${DOCS_REPO}" /tmp/repo && \
-    cp -r /tmp/repo/docs /build/docs && \
-    rm -rf /tmp/repo
-
-# Install MCP server dependencies
+# Install MCP server dependencies from the committed lockfile.
 # pnpm-workspace.yaml carries the allowBuilds allowlist and must be present
 # before install, or pnpm refuses to run dependency build scripts.
-COPY mcp-server/package.json mcp-server/pnpm-workspace.yaml mcp-server/pnpm-lock.yaml* ./mcp-server/
-RUN cd mcp-server && \
-    if [ -f pnpm-lock.yaml ]; then pnpm install --frozen-lockfile; \
-    else pnpm install; fi
+COPY mcp-server/package.json mcp-server/pnpm-workspace.yaml mcp-server/pnpm-lock.yaml ./mcp-server/
+RUN cd mcp-server && pnpm install --frozen-lockfile
 
 # Copy MCP server source
 COPY mcp-server/ ./mcp-server/
+
+# Docs from this repository (copied into the build context, see top of file)
+COPY docs/ /build/docs/
 
 # Build keyword-only index (needs tsx for TypeScript source)
 RUN cd mcp-server && \
@@ -57,25 +54,32 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ENV TERM="xterm-256color"
 
 # Install system packages
+# (zstd lets the Claude Code installer fetch the smaller compressed binary)
 # hadolint ignore=DL3018
 RUN apk add --no-cache \
     bash \
     ca-certificates \
     curl \
     git \
+    jq \
     libgcc \
     libstdc++ \
     nodejs \
     ripgrep \
     tmux \
-    ttyd
+    ttyd \
+    zstd
 
-# Install Claude Code via official binary installer
-RUN curl -fsSL https://claude.ai/install.sh | bash
-
-# Add Claude Code to PATH and disable auto-updater
-ENV PATH="/root/.local/bin:${PATH}" \
-    DISABLE_AUTOUPDATER=1
+# Claude Code is deliberately NOT part of the image. It is installed on first
+# start into the persistent home by the official installer, then keeps itself
+# up to date (see /usr/bin/claude-addon). The image never contains or
+# redistributes the Claude Code binary.
+#
+# /root is a symlink to the persistent home in /data, so everything written
+# under ~ (Claude Code state, git/gh/ssh config, shell history) survives
+# restarts and add-on updates without a per-file symlink list.
+RUN rm -rf /root && ln -s /data/home /root
+ENV PATH="/root/.local/bin:${PATH}"
 
 # Copy MCP server from builder (compiled JS + prod deps + pre-built DB)
 COPY --from=mcp-builder /build/mcp-server/dist /opt/mcp-server/dist
@@ -90,7 +94,7 @@ COPY --from=mcp-builder /build/docs /opt/docs
 COPY rootfs /
 
 # Ensure scripts are executable
-RUN chmod a+x /usr/bin/claude-entrypoint.sh \
+RUN chmod a+x /usr/bin/claude-entrypoint.sh /usr/bin/claude-addon \
     && find /etc/s6-overlay/s6-rc.d -name 'run' -exec chmod a+x {} \; \
     && find /etc/s6-overlay/s6-rc.d -name 'finish' -exec chmod a+x {} \;
 
